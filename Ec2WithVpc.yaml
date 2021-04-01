@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploy a VPC with public/private subnets
+
+Parameters:
+  KeyName:
+   Description: Ec2 Running application
+   Type: AWS::EC2::KeyPair::KeyName
+   ConstraintDescription: Must be the name of the exisiting keypair
+  InstanceType:
+   Description: Ec2 Instance Types
+   Type: String
+   Default: t2.micro
+  ImageIds:
+    Description: Ec2 ImageId Ami
+    Type: String
+    Default: "ami-05d72852800cbf29e"
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 30.0.0.0/24
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: myVPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: myVPC Internet Gateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 30.0.0.0/25
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+
+  
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+
+  EC2Instance: 
+    Type: AWS::EC2::Instance
+    Properties: 
+      ImageId: !Ref ImageIds
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+
+  # EC2Instance:
+  #   Type: AWS::EC2::Instance
+  #   Properties:
+  #     AvailabilityZone: us-east-2a
+  #     ImageId: "ami-06b382aba6c5a4f2c"
+  #     SecurityGroups: !Ref InstanceSecurityGroup
+  #     KeyName: "my-example-key"
+
+  # MyEC2Instance:
+  #     Type: AWS::EC2::Instance
+  #     Properties:
+  #       ImageId: ami-06b382aba6c5a4f2c
+  #       InstanceType: t2.micro
+  #       Tags:
+  #         - Key: Ohio6
+  #           Value: Simple Server
+  #       NetworkInterfaces:
+  #         - AssociatePublicIpAddress: "true"
+  #           DeviceIndex: "0"
+  #           GroupSet:
+  #             - Ref: InstanceSecurityGroup
+  #           SubnetId:
+  #             Ref: PublicSubnet1
+  #       UserData:
+  #         Fn::Base64: |
+  #           #!/bin/bash
+  #           yum -y update
+  #           sudo yum install -y httpd
+  #           sudo systemctl start httpd
+
+
+      
+      
+     
+  # MyEc2Instance:
+  #   Type: AWS::EC2::Instance
+  #   Properties:
+  #     ImageId: "ami-05d72852800cbf29e"
+  #     InstanceType: t2.micro
+  #     DeviceIndex: 0
+  #     AssociatePublicIpAddress: true
+  #     DeleteOnTermination: true
+  #     SubnetId: !Ref PublicSubnet1
+  #     GroupSet: !Ref InstanceSecurityGroup
+  #     Tags:
+  #       Key: Name
+  #       Value: WebInstance
+
+ 
+Outputs:
+  VPC:
+    Description: VPC
+    Value: !Ref VPC
+  AZ1:
+    Description: Availability Zone 1
+    Value: !GetAtt 
+      - PublicSubnet1
+      - AvailabilityZone

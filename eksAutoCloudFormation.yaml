@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Eks Cluster using a public vpc with two subnets
+
+Parameters: 
+  NumWorkerNodes: 
+    Type: Number
+    Description: Number of worker nodes to create
+    Default:  3
+
+  WorkerNodesInstanceType:
+    Type: String
+    Description: Ec2 instance type for the worker nodes
+    Default: t2.micro
+  
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Ec2 Instance type keypair name
+
+Mappings:
+
+  VpcIpRanges:
+    Option1:
+      VPC: 10.0.0.0/16
+      Subnet1: 10.0.0.0/18
+      Subnet2: 10.0.64.0/18
+    
+  EksAmiIds:
+    us-east-1:
+      Standard: ami-0a0b913ef3249b655
+    us-east-2:
+      Standard: ami-0958a76db2d150238
+    us-west-2:
+      Standard: ami-0f54a2f7d2e9c88b3
+    eu-west-1:
+      Standard: ami-00c3b2d35bddd4f5c
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [VpcIpRanges, Option1, VPC]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true 
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [VpcIpRanges, Option1, Subnet1]
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ""
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-Subnet1
+    
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [VpcIpRanges, Option1, Subnet2]
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ""
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-subnet2
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: 
+        - Key: Name
+          Value: !Ref AWS::StackName
+  
+  VpcGatewayAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+    
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref VPC
+      Tags: 
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-RouteTable
+
+  InternetGatewayRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttach
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet1
+
+  SubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet2
+
+  ControlPlane:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref AWS::StackName
+      Version: "1.19"
+      RoleArn: !GetAtt ControlPlaneRole.Arn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref ControlPlaneSecurityGroup
+        SubnetIds:
+          - !Ref Subnet1
+          - !Ref Subnet2
+
+
+  ControlPlaneRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+            Effect: Allow
+            Principal:
+              Service:
+                - eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+
+  ControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the elastic network interfaces between the control plane and the worker nodes
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ControlPlaneSecurity"
+
+  ControlPlaneIngressFromWorkerNodesHttp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Security group for the elastic network Ingress between the control plane
+      GroupId: !Ref ControlPlaneSecurityGroup
+      SourceSecurityGroupId: !Ref WorkerNodesSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      IpProtcol: tcp
+      FromPort: 80
+      ToPort: 80
+      IpProtcol: ssh
+      FromPort: 22
+      ToPort: 22
+
+
+  ControlPlaneEgressToWorkerNodesHttp:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Security Group for the ealstic network Egress betwenn the control plane
+      GroupId: !Ref ControlPlaneSecurityGroup
+      DestinationSecurityGroupId: !Ref WorkerNodesSecurityGroup
+      IpProtocol: tcp
+      FromPort: 10250
+      ToPort: 10250
+
+  ControlPlaneEgressToWorkerNodesHttps:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Allow outgoing HTTPS traffic (TCP/442) to worker nodes (for pods running extension API servers)
+      GroupId: !Ref ControlPlaneSecurityGroup
+      DestinationSecurityGroupId: !Ref WorkerNodesSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  WorkerNodesSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Security Group all worker nodes
+      VpcId: !Ref VPC
+      Tags: 
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-workerNodesSecurityGroup"
+        - Key: !Sub "Kubernetes.io/cluster/${ControlPlane}"
+          Value: "owned"
+
+  WorkerNodesIngressFromWorkerNodes:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: ALlow all income traffic  from other worker nodes
+      GroupId: !Ref WorkerNodesSecurityGroup
+      SourceSecurityGroupId: !Ref WorkerNodesSecurityGroup
+      IpProtocol: -1
+
+  WorkerNodesIngressFromControlplaneKubelet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow incoming kubelet traffic (TCP/10250) from control plane 
+      GroupId: !Ref WorkerNodesSecurityGroup
+      SourceSecurityGroupId: !Ref ControlPlaneSecurityGroup
+      IpProtocol: tcp
+      FromPort: 10250
+      ToPort: 10250
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      IpProtocol: ssh
+      FromPort: 22
+      ToPort: 22
+
+  WorkerNodesIngressFromControlPlaneHttps:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow incoming HTTPS traffic (TCP/443) from control plane (for pods running extension API servers)
+      GroupId: !Ref WorkerNodesSecurityGroup
+      SourceSecurityGroupId: !Ref ControlPlaneSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      IpProtocol: ssh
+      FromPort: 22
+      ToPort: 22
+
+  WorkerNodesAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+    Properties:
+      LaunchConfigurationName: !Ref WorkerNodesLaunchConfiguration
+      MinSize: !Ref NumWorkerNodes
+      MaxSize: !Ref NumWorkerNodes
+      VPCZoneIdentifier:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-WorkerNodesAutoScalingGroup"
+          PropagateAtLaunch: true
+        # Without this tag, worker nodes are unable to join the cluster:
+        - Key: !Sub "kubernetes.io/cluster/${ControlPlane}"
+          Value: "owned"
+          PropagateAtLaunch: true
+
+  WorkerNodesLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    # Wait until cluster is ready before launching worker nodes
+    DependsOn: ControlPlane
+    Properties:
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !Ref WorkerNodesInstanceProfile
+      ImageId: !FindInMap
+        - EksAmiIds
+        - !Ref AWS::Region
+        - Standard
+      InstanceType: !Ref WorkerNodesInstanceType
+      KeyName: !Ref KeyPairName
+      SecurityGroups:
+        - !Ref WorkerNodesSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash
+            set -o xtrace
+            /etc/eks/bootstrap.sh ${ControlPlane}
+            /opt/aws/bin/cfn-signal \
+                            --exit-code $? \
+                            --stack  ${AWS::StackName} \
+                            --resource NodeGroup  \
+                            --region ${AWS::Region}
+
+  WorkerNodesInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WorkerNodesRole
+
+  WorkerNodesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+Outputs:
+
+  WorkerNodesRoleArn:
+    # Needed for the last step "enable worker nodes to join the cluster":
+    # https://docs.aws.amazon.com/eks/latest/userguide/getting-started.html#eks-create-cluster
+    Description: ARN of the worker nodes role
+    Value: !GetAtt WorkerNodesRole.Arn
+
